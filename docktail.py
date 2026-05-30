@@ -378,6 +378,13 @@ class State:
         self.spin_idx      = 0
         self.containers    = []
         self.svc_width     = 12
+        # ── scrollback ────────────────────────────────────────────────────────
+        # Each entry: (text: str, is_sep: bool)
+        #   text    = pre-formatted ANSI string ready to print
+        #   is_sep  = True for date-separator rules
+        self.line_buffer   = deque(maxlen=5000)
+        self.scroll_offset = 0          # 0 = live/following; N = N lines from bottom
+        self.highlight_row = None   # 0-indexed row within current visible window
 
 state = State()
 
@@ -444,9 +451,11 @@ def setup_display():
     with _term_lock:
         sys.stdout.write(
             "\033[2J"
-            f"\033[2;{rows}r"
-            f"\033[{rows};1H"
-            "\033[?25l"
+            f"\033[2;{rows-1}r"     # scroll region rows 2..(rows-1); row rows = status
+            f"\033[{rows-1};1H"
+            "\033[?25l"             # hide cursor
+            "\033[?1000h"           # enable mouse button events
+            "\033[?1006h"           # enable SGR extended mouse (handles cols > 223)
         )
         sys.stdout.flush()
 
@@ -478,12 +487,25 @@ def render_status():
         else:               idle_str = f"{secs//3600}h {(secs%3600)//60}m ago"
         activity = f"{csi(90)}{spin} idle · last log {idle_str}{RESET}"
 
-    paused = f"  {csi(93)}⏸ PAUSED{RESET}" if state.paused else ""
-    div    = f"\033[48;5;235m\033[37m {csi(90)}│{RESET}\033[48;5;235m\033[37m "
+    div = f"\033[48;5;235m\033[37m {csi(90)}│{RESET}\033[48;5;235m\033[37m "
 
-    qlen = len(_mq_heap)
-    buf_tag = (f"  {csi(90)}buf:{qlen}{RESET}\033[48;5;235m\033[37m"
-               if qlen > 0 else "")
+    # Scrollback indicator: replaces the activity section when scrolled back
+    if state.scroll_offset > 0:
+        buffered = len(_mq_heap)
+        buf_str  = f"  {csi(90)}+{buffered} queued{RESET}\033[48;5;235m\033[37m" if buffered else ""
+        scroll_tag = (
+            f"{csi(93)}↑ {state.scroll_offset} lines back{RESET}"
+            f"\033[48;5;235m\033[37m"
+            f"  {csi(90)}[↑↓ scroll  End=live]{RESET}\033[48;5;235m\033[37m"
+            f"{buf_str}"
+        )
+        state_section = scroll_tag
+    elif state.paused:
+        buffered     = len(_mq_heap)
+        buf_str      = f"  {csi(90)}{buffered} queued{RESET}\033[48;5;235m\033[37m" if buffered else ""
+        state_section = f"{csi(93)}⏸ PAUSED{RESET}\033[48;5;235m\033[37m{buf_str}"
+    else:
+        state_section = activity
 
     bar = (
         f"\033[48;5;235m\033[37m "
@@ -498,11 +520,9 @@ def render_status():
         + f"hidden:{csi(90)}{state.hidden:>5}{RESET}\033[48;5;235m\033[37m"
         + f"  {csi(2)}(filtered){RESET}\033[48;5;235m\033[37m"
         + div
-        + activity
-        + buf_tag
-        + paused
+        + state_section
         + div
-        + f"{csi(90)}[e w i d  p c q]{RESET}"
+        + f"{csi(90)}[e w i d  p c q  ↑↓]{RESET}"
         + "\033[48;5;235m\033[K"
         + RESET
     )
@@ -513,6 +533,7 @@ def render_status():
 
 def handle_resize(*_):
     setup_display()
+    redraw_log_area()
     render_status()
 
 def _fmt_line(p: ParsedLine) -> str:
@@ -534,12 +555,55 @@ def _fmt_line(p: ParsedLine) -> str:
                   p.message) if p.message else strip_ansi(p.raw)
     return f"{svc}{ts}{badge} {tgt}{msg}"
 
-def print_log_line(p: ParsedLine):
+def _log_height() -> int:
+    """Number of usable log rows: rows 2..(rows-1) — excludes header and status."""
     rows, _ = term_size()
-    line = _fmt_line(p)
+    return max(1, rows - 2)
+
+def redraw_log_area():
+    """Re-render the entire log area from line_buffer.
+    Used when entering/leaving scroll mode, unpausing, or resizing."""
+    rows, _ = term_size()
+    height  = _log_height()
+    buf     = list(state.line_buffer)
+    n       = len(buf)
+    offset  = state.scroll_offset
+
+    # Slice of buf to show
+    if offset == 0:
+        visible = buf[max(0, n - height):]
+    else:
+        end     = max(0, n - offset)
+        start   = max(0, end - height)
+        visible = buf[start:end]
+
+    hl = state.highlight_row  # 0-indexed within visible window
+
     with _term_lock:
-        sys.stdout.write(f"\033[{rows};1H\n{line}\033[K")
+        for i in range(height):
+            row = 2 + i
+            if i < len(visible):
+                text, is_sep = visible[i]
+                if hl is not None and i == hl:
+                    # Reverse-video highlight: strip trailing RESET then apply
+                    sys.stdout.write(f"\033[{row};1H\033[7m{strip_ansi(text)}\033[m\033[K")
+                else:
+                    sys.stdout.write(f"\033[{row};1H{text}\033[K")
+            else:
+                sys.stdout.write(f"\033[{row};1H\033[K")   # blank row
         sys.stdout.flush()
+
+def _buffer_and_print(text: str, is_sep: bool = False):
+    """Add a rendered line to the buffer and — when in live mode — print it."""
+    state.line_buffer.append((text, is_sep))
+    if state.scroll_offset == 0 and not state.paused:
+        rows, _ = term_size()
+        with _term_lock:
+            sys.stdout.write(f"\033[{rows-1};1H\n{text}\033[K")
+            sys.stdout.flush()
+
+def print_log_line(p: ParsedLine):
+    _buffer_and_print(_fmt_line(p), is_sep=False)
 
 # ── Ingestion ─────────────────────────────────────────────────────────────────
 
@@ -561,8 +625,10 @@ def ingest_stream(stream, default_service: str = ''):
             if not visible:
                 state.hidden += 1
 
-        # Counts are updated immediately; display is deferred to printer_loop
-        if visible and not state.paused:
+        # Counts update immediately; display is deferred to printer_loop.
+        # Always enqueue visible lines even when paused — the merge heap
+        # buffers them and they flush in order when the user resumes.
+        if visible:
             mq_put(p)
 
         render_status()
@@ -570,15 +636,12 @@ def ingest_stream(stream, default_service: str = ''):
 # ── Printer (merge-queue consumer) ───────────────────────────────────────────
 
 def _print_date_sep(d) -> None:
-    """Print a full-width date separator rule when the log stream crosses a day."""
+    """Inject a full-width date-separator rule into the buffer (and screen)."""
     _, cols = term_size()
     label   = d.strftime('  %A, %B %-d, %Y  ')
     pad     = max(0, cols - len(label) - 4)
     rule    = f"{csi(90)}── {label}{'─' * pad}{RESET}"
-    rows, _ = term_size()
-    with _term_lock:
-        sys.stdout.write(f"\033[{rows};1H\n{rule}\033[K")
-        sys.stdout.flush()
+    _buffer_and_print(rule, is_sep=True)
 
 _last_printed_date = None
 
@@ -658,7 +721,62 @@ def run_docker_logs(containers: list, tail: int):
         ).start()
     return procs
 
-# ── Keyboard ──────────────────────────────────────────────────────────────────
+# ── Input reading ─────────────────────────────────────────────────────────────
+
+def _read_key(fd) -> str:
+    """Read one keyboard/mouse event from stdin in raw mode.
+    Returns a plain char, a named token like 'UP'/'DOWN'/'PGUP'/'PGDN'/
+    'HOME'/'END', or a mouse token like 'SCROLL_UP'/'SCROLL_DN'/'CLICK:R,C'."""
+    import select
+    ch = os.read(fd, 1).decode('utf-8', errors='replace')
+    if ch != '\033':
+        return ch
+
+    # Read the rest of the escape sequence with a short timeout
+    seq = ch
+    deadline = time.monotonic() + 0.15
+    while time.monotonic() < deadline:
+        r, _, _ = select.select([fd], [], [], max(0, deadline - time.monotonic()))
+        if not r:
+            break
+        nch = os.read(fd, 1).decode('utf-8', errors='replace')
+        seq += nch
+        # SGR mouse sequences end in M (press) or m (release)
+        if len(seq) > 3 and seq[1] == '[' and seq[2] == '<' and nch in 'Mm':
+            break
+        # Regular CSI sequences end in a letter or ~
+        if len(seq) > 2 and seq[1] == '[' and (nch.isalpha() or nch == '~'):
+            break
+        if len(seq) > 32:
+            break
+
+    # Named key mappings
+    _keys = {
+        '\033[A': 'UP',    '\033[B': 'DOWN',
+        '\033[C': 'RIGHT', '\033[D': 'LEFT',
+        '\033[5~': 'PGUP', '\033[6~': 'PGDN',
+        '\033[H': 'HOME',  '\033[F': 'END',
+        '\033[1~': 'HOME', '\033[4~': 'END',
+        '\033OA': 'UP',    '\033OB': 'DOWN',
+        '\033OH': 'HOME',  '\033OF': 'END',
+    }
+    if seq in _keys:
+        return _keys[seq]
+
+    # SGR mouse: \033[<btn;col;row M/m
+    m = re.match(r'^\033\[<(\d+);(\d+);(\d+)([Mm])$', seq)
+    if m:
+        btn   = int(m.group(1))
+        col   = int(m.group(2))
+        row   = int(m.group(3))
+        press = str(m.group(4))   # explicit str() — re.group() typed as str|Any
+        if press == 'M':
+            if btn == 64: return 'SCROLL_UP'
+            if btn == 65: return 'SCROLL_DN'
+            if btn == 0:  return f'CLICK:{row},{col}'
+    return seq  # unknown sequence — ignore
+
+# ── Keyboard loop ─────────────────────────────────────────────────────────────
 
 def keyboard_loop():
     import tty, termios
@@ -667,26 +785,86 @@ def keyboard_loop():
     tty.setraw(fd)
     try:
         while state.running:
-            ch = sys.stdin.read(1)
-            if ch in ('\x03', '\x04', 'q', 'Q'):
+            key = _read_key(fd)
+
+            # ── quit ──────────────────────────────────────────────────────────
+            if key in ('\x03', '\x04', 'q', 'Q'):
                 state.running = False
                 break
-            def toggle(lvl):
-                if lvl in state.visible: state.visible.discard(lvl)
-                else: state.visible.add(lvl)
-            with state.lock:
-                if   ch == 'e': toggle('ERROR')
-                elif ch == 'w': toggle('WARN')
-                elif ch == 'i': toggle('INFO')
-                elif ch == 'd': toggle('DEBUG')
-                elif ch == 'p': state.paused    = not state.paused
-                elif ch == 'c':
-                    state.counts = {'ERROR':0,'WARN':0,'INFO':0,'DEBUG':0}
-                    state.hidden = 0
+
+            # ── scroll navigation ─────────────────────────────────────────────
+            rows    = term_size()[0]
+            height  = _log_height()
+            buf_len = len(state.line_buffer)
+            max_off = max(0, buf_len - height)
+
+            def scroll_by(delta: int):
+                """Adjust scroll_offset and redraw."""
+                prev = state.scroll_offset
+                state.scroll_offset = max(0, min(max_off, state.scroll_offset + delta))
+                if state.scroll_offset != prev or delta == 0:
+                    state.highlight_row = None
+                    redraw_log_area()
+
+            def go_live():
+                """Return to live-follow mode."""
+                state.scroll_offset = 0
+                state.highlight_row = None
+                state.paused        = False
+                redraw_log_area()
+
+            if key == 'UP':         scroll_by(+1)
+            elif key == 'DOWN':     scroll_by(-1)
+            elif key == 'PGUP':     scroll_by(+max(1, height // 2))
+            elif key == 'PGDN':     scroll_by(-max(1, height // 2))
+            elif key == 'HOME':     scroll_by(max_off)   # jump to oldest in buffer
+            elif key == 'END':      go_live()
+            elif key == 'SCROLL_UP': scroll_by(+3)
+            elif key == 'SCROLL_DN':
+                if state.scroll_offset > 0: scroll_by(-3)
+                else: go_live()
+
+            # ── click: pause + highlight the clicked line ─────────────────────
+            elif key.startswith('CLICK:'):
+                _, coords = key.split(':')
+                click_row, _ = map(int, coords.split(','))
+                # Rows 2..(rows-1) are the log area
+                if 2 <= click_row <= rows - 1:
+                    vis_idx = click_row - 2   # 0-indexed within visible window
+                    buf_idx_from_end = (
+                        state.scroll_offset + (height - 1 - vis_idx)
+                    )
+                    # Only highlight if there's actually a line there
+                    if buf_idx_from_end < buf_len:
+                        state.paused        = True
+                        state.highlight_row = vis_idx
+                        redraw_log_area()
+
+            # ── level / pause / clear toggles ─────────────────────────────────
+            else:
+                def toggle(lvl):
+                    if lvl in state.visible: state.visible.discard(lvl)
+                    else: state.visible.add(lvl)
+
+                needs_redraw = False
+                with state.lock:
+                    if   key == 'e': toggle('ERROR')
+                    elif key == 'w': toggle('WARN')
+                    elif key == 'i': toggle('INFO')
+                    elif key == 'd': toggle('DEBUG')
+                    elif key == 'p':
+                        if state.paused:
+                            # Unpause: clear highlight and return to live
+                            go_live()
+                        else:
+                            state.paused = True
+                    elif key == 'c':
+                        state.counts = {'ERROR':0,'WARN':0,'INFO':0,'DEBUG':0}
+                        state.hidden = 0
+
             render_status()
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
-
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────
 
@@ -699,7 +877,11 @@ def cleanup():
     _restore_termios()
     rows, _ = term_size()
     with _term_lock:
-        sys.stdout.write(f"\033[r\033[{rows};1H\n\033[?25h\033[m")
+        sys.stdout.write(
+            "\033[?1006l"           # disable SGR extended mouse
+            "\033[?1000l"           # disable mouse button tracking
+            f"\033[r\033[{rows};1H\n\033[?25h\033[m"
+        )
         sys.stdout.flush()
 
 # ── Entry point ───────────────────────────────────────────────────────────────
