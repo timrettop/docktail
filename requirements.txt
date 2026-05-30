@@ -1,0 +1,6 @@
+# Phase 1 (terminal) — stdlib only, nothing to install
+
+# Phase 2 (web UI) — uncomment when starting server development
+# fastapi>=0.110.0
+# uvicorn[standard]>=0.29.0
+# websockets>=12.0
