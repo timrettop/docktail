@@ -481,7 +481,6 @@ def render_status():
     paused = f"  {csi(93)}⏸ PAUSED{RESET}" if state.paused else ""
     div    = f"\033[48;5;235m\033[37m {csi(90)}│{RESET}\033[48;5;235m\033[37m "
 
-    # Show merge queue depth so the user can see when the startup buffer drains
     qlen = len(_mq_heap)
     buf_tag = (f"  {csi(90)}buf:{qlen}{RESET}\033[48;5;235m\033[37m"
                if qlen > 0 else "")
@@ -573,7 +572,7 @@ def ingest_stream(stream, default_service: str = ''):
 def _print_date_sep(d) -> None:
     """Print a full-width date separator rule when the log stream crosses a day."""
     _, cols = term_size()
-    label   = d.strftime('  %A, %B %-d, %Y  ')   # e.g.  Wednesday, May 28, 2025
+    label   = d.strftime('  %A, %B %-d, %Y  ')
     pad     = max(0, cols - len(label) - 4)
     rule    = f"{csi(90)}── {label}{'─' * pad}{RESET}"
     rows, _ = term_size()
@@ -581,14 +580,14 @@ def _print_date_sep(d) -> None:
         sys.stdout.write(f"\033[{rows};1H\n{rule}\033[K")
         sys.stdout.flush()
 
-_last_printed_date = None   # tracks the calendar date of the last displayed line
+_last_printed_date = None
 
 def printer_loop():
     """Drain the merge heap in timestamp order at ~25 Hz.
-    Lines wait in the heap until their arrival_mono is older than the
-    current settle window, ensuring concurrent streams are interleaved
-    correctly even when their tail bursts arrive at slightly different times.
-    A date-separator rule is injected whenever the log stream crosses midnight."""
+
+    Lines accumulate in the heap (buffered) while paused or scrolled back,
+    and flush in chronological order when the user returns to live mode.
+    Date-separator rules are injected when the stream crosses midnight."""
     global _last_printed_date
     while state.running:
         lines = mq_drain()
@@ -603,7 +602,7 @@ def printer_loop():
             render_status()
         time.sleep(0.04)  # 25 Hz
 
-    # Flush anything still in the queue on exit
+    # Flush remaining lines on exit
     for _, _, p in sorted(_mq_heap):
         print_log_line(p)
 
@@ -687,6 +686,7 @@ def keyboard_loop():
             render_status()
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────
 
