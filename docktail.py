@@ -384,7 +384,7 @@ class State:
         #   is_sep  = True for date-separator rules
         self.line_buffer   = deque(maxlen=5000)
         self.scroll_offset = 0          # 0 = live/following; N = N lines from bottom
-        self.highlight_row = None   # 0-indexed row within current visible window
+        self.highlight_row: int | None = None   # 0-indexed row within visible window
 
 state = State()
 
@@ -680,7 +680,7 @@ def heartbeat_loop():
 
 # ── Docker helpers ────────────────────────────────────────────────────────────
 
-def discover_containers(project: str = None) -> list:
+def discover_containers(project: str | None = None) -> list:
     """Return names of running containers, optionally filtered by compose project.
 
     Uses 'docker ps' directly — works for containers started any way
@@ -912,6 +912,7 @@ def main():
                              'Example: --skip traefik crowdsec watchtower')
     args = parser.parse_args()
 
+    skipped: list[str] = []   # containers excluded by --skip; always bound
     if args.stdin:
         containers = []
     elif args.containers:
@@ -922,8 +923,8 @@ def main():
             sys.exit("No running containers found. "
                      "Start a container first, or use --stdin.")
         if args.skip:
-            skip_set  = {s.lower() for s in args.skip}
-            skipped   = [c for c in containers if c.lower() in skip_set]
+            skip_set   = {s.lower() for s in args.skip}
+            skipped    = [c for c in containers if c.lower() in skip_set]
             containers = [c for c in containers if c.lower() not in skip_set]
             if not containers:
                 sys.exit(
