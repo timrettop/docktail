@@ -44,13 +44,13 @@ cd docktail
 python3 docktail.py
 
 # Watch specific containers
-python3 docktail.py kei postgres
+python3 docktail.py api postgres
 
 # Watch all containers in a compose project
 python3 docktail.py --project mystack
 
 # Skip noisy infrastructure containers
-python3 docktail.py --skip traefik crowdsec watchtower
+python3 docktail.py --skip nginx redis watchtower
 
 # Start at WARN level, fetch 100 lines of history
 python3 docktail.py --show WARN,ERROR --tail 100
@@ -63,7 +63,7 @@ docker-compose logs -f | python3 docktail.py --stdin
 ## Keyboard shortcuts
 
 | Key | Action |
-|-----|--------|
+| --- | --- |
 | `e` | Toggle ERROR display |
 | `w` | Toggle WARN display |
 | `i` | Toggle INFO display |
@@ -75,7 +75,7 @@ docker-compose logs -f | python3 docktail.py --stdin
 ## CLI options
 
 | Option | Default | Description |
-|--------|---------|-------------|
+| --- | --- | --- |
 | `--show LEVELS` | `ERROR,WARN,INFO` | Comma-separated levels to display |
 | `--tail N` | `50` | Lines of history per container on start |
 | `--project NAME` | — | Filter to a compose project by label |
@@ -85,12 +85,14 @@ docker-compose logs -f | python3 docktail.py --stdin
 ## Roadmap
 
 ### Phase 2 — Web UI
+
 - FastAPI + WebSocket backend wrapping `docker ps` / `docker logs`
 - Single-file `index.html` frontend (no build step)
 - Container picker, live level toggles, counter badges
 - Auto-reconnect on disconnect
 
 ### Phase 3 — Unraid plugin
+
 - `.plg` XML plugin definition
 - Installs to `/usr/local/emhttp/plugins/docktail/`
 - Menu item under the Docker tab

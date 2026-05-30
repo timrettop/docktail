@@ -20,7 +20,7 @@ Options:
     --project NAME  Filter to containers belonging to a specific compose project
                     (matches the com.docker.compose.project label)
     --skip NAME...  Exclude specific containers when watching all (no names given).
-                    Example: --skip traefik crowdsec watchtower
+                    Example: --skip nginx redis watchtower
 
 Keyboard (live):
     e / w / i / d   Toggle ERROR / WARN / INFO / DEBUG display
@@ -152,7 +152,7 @@ def container_color(name: str) -> str:
 #   B  NestJS          [Nest] pid - date time  LEVEL  [Context]  message
 #   C  bracket         [LEVEL] message  or  [LEVEL]: message
 #   D  Python logging  YYYY-MM-DD HH:MM:SS[,ms] … LEVEL … message
-#   E  level-first     LEVEL message  (e.g. crowdsec INF, gluetun WRN)
+#   E  level-first     LEVEL message  (e.g. short level codes: INF, WRN, ERR)
 #   F  bare-scan       search for level keyword anywhere (last resort)
 
 # All level keywords including short forms used by various apps
@@ -192,7 +192,7 @@ _P_BRACKET_TS = re.compile(
     re.DOTALL)
 
 # D: Python logging:  YYYY-MM-DD HH:MM:SS[,ms]  <optional context>  LEVEL  message
-#    Handles tautulli, icloudpd, bazarr, etc.  The .{0,60}? skips over any
+#    Handles apps using Python's logging module.  The .{0,60}? skips over any
 #    logger name / request-id between the timestamp and the level keyword.
 _P_PYTHON = re.compile(
     r'^(\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?)'
@@ -345,7 +345,7 @@ def parse_line(raw: str, default_service: str = '') -> ParsedLine:
         return _make(raw, service, ts1, ts_ep,
                      m.group('level'), '', m.group('message'))
 
-    # E: level keyword at start of remainder (crowdsec INF, gluetun WRN, etc.)
+    # E: level keyword at start of remainder (e.g. short codes: INF, WRN, ERR)
     m = _P_LEVEL_FIRST.match(rest)
     if m:
         return _make(raw, service, ts1, ts_ep,
@@ -909,7 +909,7 @@ def main():
     parser.add_argument('--skip', nargs='+', metavar='CONTAINER', default=[],
                         help='Exclude these containers when watching all (no name given). '
                              'Ignored when specific container names are passed. '
-                             'Example: --skip traefik crowdsec watchtower')
+                             'Example: --skip nginx redis watchtower')
     args = parser.parse_args()
 
     skipped: list[str] = []   # containers excluded by --skip; always bound
