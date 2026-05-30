@@ -20,6 +20,14 @@ venv/
 env/
 ENV/
 
+# Testing and coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Type checking
+.pyright/
+
 # IDE
 .vscode/
 .idea/

@@ -6,6 +6,8 @@ target-version = "py310"
 select = ["E", "F", "W"]
 ignore = [
     "E501",   # line too long — regex patterns and log samples are intentionally long
+    "E701",   # multiple statements on one line — intentional in dispatch tables and guard clauses
+    "E702",   # statement ends with semicolon — intentional compact style in __init__ bodies
     "E741",   # ambiguous variable names — 'm' and 'p' are idiomatic here
     "F401",   # unused imports — conftest.py imports docktail for its side-effect
 ]

@@ -27,7 +27,17 @@ Keyboard (live):
     p               Pause / resume     c  Clear counters     q / Ctrl+C  Quit
 """
 
-import sys, os, re, threading, subprocess, time, signal, argparse, atexit, heapq, shutil
+import sys
+import os
+import re
+import threading
+import subprocess
+import time
+import signal
+import argparse
+import atexit
+import heapq
+import shutil
 from collections import deque
 from datetime import datetime, timezone
 
@@ -93,7 +103,9 @@ def term_size():
 # ── ANSI ──────────────────────────────────────────────────────────────────────
 
 _ANSI_RE   = re.compile(r'\x1b(?:\[[0-9;]*[a-zA-Z]|[()][0-9A-Za-z])')
-strip_ansi = lambda s: _ANSI_RE.sub('', s)
+
+def strip_ansi(s: str) -> str:
+    return _ANSI_RE.sub('', s)
 def csi(*c): return f"\033[{';'.join(str(x) for x in c)}m"
 RESET = csi(0)
 
@@ -508,13 +520,13 @@ def render_status():
         state_section = activity
 
     bar = (
-        f"\033[48;5;235m\033[37m "
+        "\033[48;5;235m\033[37m "
         + pill('ERROR','E')
-        + f"\033[48;5;235m\033[37m  "
+        + "\033[48;5;235m\033[37m  "
         + pill('WARN', 'W')
-        + f"\033[48;5;235m\033[37m  "
+        + "\033[48;5;235m\033[37m  "
         + pill('INFO', 'I')
-        + f"\033[48;5;235m\033[37m  "
+        + "\033[48;5;235m\033[37m  "
         + pill('DEBUG','D')
         + div
         + f"hidden:{csi(90)}{state.hidden:>5}{RESET}\033[48;5;235m\033[37m"
@@ -779,7 +791,8 @@ def _read_key(fd) -> str:
 # ── Keyboard loop ─────────────────────────────────────────────────────────────
 
 def keyboard_loop():
-    import tty, termios
+    import tty
+    import termios
     fd  = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     tty.setraw(fd)
@@ -846,7 +859,6 @@ def keyboard_loop():
                     if lvl in state.visible: state.visible.discard(lvl)
                     else: state.visible.add(lvl)
 
-                needs_redraw = False
                 with state.lock:
                     if   key == 'e': toggle('ERROR')
                     elif key == 'w': toggle('WARN')
