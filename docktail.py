@@ -780,7 +780,7 @@ def main():
         with _term_lock:
             note = (f"{csi(90)}watching {len(containers)} container(s):"
                     f"{RESET}  {colored_names}{project_tag}{skip_tag}")
-            sys.stdout.write(f"\033[{rows};1H\n{note}\033[K")
+            sys.stdout.write(f"\033[{rows-1};1H\n{note}\033[K")
             sys.stdout.flush()
         procs = run_docker_logs(containers, args.tail)
 
