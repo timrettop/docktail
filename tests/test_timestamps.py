@@ -6,7 +6,7 @@ offsets from time.time() rather than fixed timestamps.
 """
 import time
 import pytest
-from docktail import _fmt_ts, _smart_ts, _ts_epoch
+from core import _fmt_ts, _smart_ts, _ts_epoch
 
 
 # ── _ts_epoch: ISO string → Unix float ───────────────────────────────────────

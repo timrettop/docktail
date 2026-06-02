@@ -41,6 +41,13 @@ import shutil
 from collections import deque
 from datetime import datetime, timezone
 
+from core import (
+    strip_ansi, LEVEL_RANK, _norm,
+    _fmt_ts, _ts_epoch, _smart_ts,
+    ParsedLine, parse_line,
+    assign_container_index, _KV,
+)
+
 # ── Docker binary detection ───────────────────────────────────────────────────
 
 def _find_docker() -> list:
@@ -101,11 +108,8 @@ def term_size():
         return 24, 80
 
 # ── ANSI ──────────────────────────────────────────────────────────────────────
-
-_ANSI_RE   = re.compile(r'\x1b(?:\[[0-9;]*[a-zA-Z]|[()][0-9A-Za-z])')
-
-def strip_ansi(s: str) -> str:
-    return _ANSI_RE.sub('', s)
+# strip_ansi and LEVEL_RANK are imported from core.
+# Terminal-specific ANSI helpers remain here.
 def csi(*c): return f"\033[{';'.join(str(x) for x in c)}m"
 RESET = csi(0)
 
@@ -119,10 +123,6 @@ LEVEL_FG = {
     "ERROR": csi(31,1), "WARN": csi(33,1),
     "INFO":  csi(34),   "DEBUG": csi(90),
 }
-LEVEL_RANK = {
-    "ERROR":0, "WARN":1, "WARNING":1, "INFO":2, "DEBUG":3, "TRACE":3,
-}
-
 _SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 # ── Container colour palette ──────────────────────────────────────────────────
@@ -142,238 +142,14 @@ _CONTAINER_COLORS = [
     csi(38,5,87),   # cyan-mint
 ]
 
-_container_color_map: dict = {}
-_color_assign_lock         = threading.Lock()
 
 def container_color(name: str) -> str:
-    with _color_assign_lock:
-        if name not in _container_color_map:
-            idx = len(_container_color_map) % len(_CONTAINER_COLORS)
-            _container_color_map[name] = _CONTAINER_COLORS[idx]
-        return _container_color_map[name]
+    """Return the ANSI colour code for a container name.
 
-# ── Log parser ────────────────────────────────────────────────────────────────
-#
-# Strategy: always strip the docker timestamp prefix first, then try a series
-# of format patterns on the remainder.  The fallback scans for a level keyword
-# in the remainder (not the full raw line, which avoids repeating the docker
-# timestamp in the message column).
-#
-# Supported formats (tried in order on the remainder after docker-ts is stripped):
-#   A  Rust/tracing    ts2  LEVEL  target: message  kv=val
-#   B  NestJS          [Nest] pid - date time  LEVEL  [Context]  message
-#   C  bracket         [LEVEL] message  or  [LEVEL]: message
-#   D  Python logging  YYYY-MM-DD HH:MM:SS[,ms] … LEVEL … message
-#   E  level-first     LEVEL message  (e.g. short level codes: INF, WRN, ERR)
-#   F  bare-scan       search for level keyword anywhere (last resort)
-
-# All level keywords including short forms used by various apps
-_LEVEL_PAT = r'(?P<level>ERROR|ERR|CRITICAL|WARN(?:ING)?|WRN|INFO|INF|DEBUG|DBG|TRACE)'
-
-# Step 1 patterns — strip outer container prefix + docker timestamp
-#
-# IMPORTANT: service uses [^|:\s]+? (excludes colon and pipe) so it never
-# accidentally matches an ISO timestamp like 2026-05-30T19:15:29Z, which
-# contains colons.  Docker container names never contain colons.
-# rest uses \s*(.*)$ (not .+) to handle blank lines that are just a timestamp.
-_COMPOSE_PRE = re.compile(
-    r'^(?P<service>[^|:\s]+?)\s+\|\s+(?P<ts1>\S+)\s*(?P<rest>.*)$', re.DOTALL)
-# Plain docker logs --timestamps:  ts1  <remainder>  (rest may be empty)
-_DOCKER_PRE  = re.compile(
-    r'^(?P<ts1>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[^\s]*)\s*(?P<rest>.*)$', re.DOTALL)
-
-# Step 2 patterns — applied to <remainder> after docker-ts is stripped
-# A: Rust tracing-subscriber:  ts2  LEVEL  target::path: message
-_P_RUST = re.compile(
-    r'^(?P<ts2>\d{4}-\d{2}-\d{2}T[^\s]+)\s+' + _LEVEL_PAT + r'\s+'
-    r'(?P<target>[^\s:]+(?:::[^\s:]+)*):\s*(?P<message>.+)$', re.DOTALL)
-
-# B: NestJS:  [Nest] pid - MM/DD/YYYY, HH:MM:SS AM  LEVEL  [Context]  message
-_P_NEST = re.compile(
-    r'^\[Nest\]\s+\d+\s+-\s+.{5,35}?\s+' + _LEVEL_PAT + r'\s+'
-    r'\[(?P<target>[^\]]+)\]\s+(?P<message>.+)$', re.DOTALL)
-
-# C: bracket level:  [LEVEL] message  or  [LEVEL]: message
-_P_BRACKET = re.compile(
-    r'^\[' + _LEVEL_PAT + r'\]\s*:?\s*(?P<message>.+)$', re.DOTALL)
-
-# C2: date+bracket level (hotio/linuxserver.io containers):
-#     [YYYY-MM-DD HH:MM:SS] [LEVEL] message
-_P_BRACKET_TS = re.compile(
-    r'^\[\d{4}-\d{2}-\d{2}[^\]]+\]\s+\[' + _LEVEL_PAT + r'\]\s*(?P<message>.+)$',
-    re.DOTALL)
-
-# D: Python logging:  YYYY-MM-DD HH:MM:SS[,ms]  <optional context>  LEVEL  message
-#    Handles apps using Python's logging module.  The .{0,60}? skips over any
-#    logger name / request-id between the timestamp and the level keyword.
-_P_PYTHON = re.compile(
-    r'^(\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?)'
-    r'.{0,60}?\b' + _LEVEL_PAT + r'\b'
-    r'[\s:*]+(?P<message>.+)$', re.DOTALL)
-
-# E: level-first (no leading timestamp in remainder):  LEVEL  message
-_P_LEVEL_FIRST = re.compile(
-    r'^' + _LEVEL_PAT + r'\s+(?P<message>.+)$', re.DOTALL)
-
-# F: logfmt key=value style used by Go apps (logrus, zap, zerolog):
-#    time="..." level=warning msg="..." or level=info msg="..."
-_P_LOGFMT = re.compile(
-    r'\blevel=(?P<level>\w+)\b.*?\bmsg=(?P<message>"[^"]*"|\S+)', re.IGNORECASE)
-
-# G: bare scan — level keyword anywhere (case-insensitive last resort)
-_BARE_LEVEL = re.compile(r'\b' + _LEVEL_PAT + r'\b', re.IGNORECASE)
-
-_KV = re.compile(r'\b(\w+?)(?:2m)?=("(?:[^"\\]|\\.)*"|\S+)')
-
-def _fmt_ts(ts: str) -> str:
-    """Simple HH:MM:SS.mmm — used only inside parse_line for the ParsedLine.timestamp
-    field (kept for fallback display when ts_epoch is unavailable)."""
-    try:
-        return datetime.fromisoformat(ts.replace('Z','+00:00')).strftime('%H:%M:%S.%f')[:-3]
-    except Exception:
-        pass
-    try:
-        return datetime.strptime(ts[:19], '%Y-%m-%d %H:%M:%S').strftime('%H:%M:%S')
-    except Exception:
-        return ts[11:23] if len(ts) > 11 else ts
-
-def _smart_ts(epoch: float) -> str:
-    """Format a Unix epoch as a human-readable timestamp relative to today (local time).
-
-    Same calendar day  →  14:23:45.123          (time + ms, most common case)
-    Yesterday          →  yesterday 14:23:45
-    Within 6 days      →  Mon 14:23:45           (day-of-week)
-    Same year          →  May 28 14:23:45
-    Different year     →  2025-05-28 14:23:45
+    Uses assign_container_index() from core so the colour slot assigned here
+    stays in sync with the CSS colours used by the web UI.
     """
-    try:
-        now   = datetime.now().astimezone()
-        dt    = datetime.fromtimestamp(epoch).astimezone()
-        today = now.date()
-        d     = dt.date()
-        diff  = (today - d).days
-
-        t = dt.strftime('%H:%M:%S')
-        if diff == 0:
-            return f"{t}.{dt.microsecond // 1000:03d}"
-        elif diff == 1:
-            return f"yesterday {t}"
-        elif diff < 7:
-            return dt.strftime(f'%a {t}')
-        elif d.year == today.year:
-            return dt.strftime(f'%b %d {t}')
-        else:
-            return dt.strftime(f'%Y-%m-%d {t}')
-    except Exception:
-        return '?'
-
-def _ts_epoch(ts: str) -> float:
-    """Unix epoch float — used for merge-sort ordering across containers."""
-    try:
-        return datetime.fromisoformat(ts.replace('Z','+00:00')).timestamp()
-    except Exception:
-        pass
-    try:
-        return datetime.strptime(ts[:19], '%Y-%m-%d %H:%M:%S').timestamp()
-    except Exception:
-        return time.time()
-
-def _norm(lvl: str) -> str:
-    """Normalise any level variant to one of ERROR/WARN/INFO/DEBUG."""
-    return {
-        'WARNING':  'WARN',  'WRN':   'WARN',
-        'ERR':      'ERROR', 'CRITICAL': 'ERROR',
-        'INF':      'INFO',
-        'DBG':      'DEBUG', 'TRACE': 'DEBUG',
-    }.get(lvl.upper(), lvl.upper())
-
-class ParsedLine:
-    __slots__ = ('raw','service','timestamp','ts_epoch','arrival_mono',
-                 'level','target','message')
-    def __init__(self, raw='', service='', timestamp='', ts_epoch=0.0,
-                 arrival_mono=0.0, level='INFO', target='', message=''):
-        self.raw=raw; self.service=service
-        self.timestamp=timestamp; self.ts_epoch=ts_epoch
-        self.arrival_mono=arrival_mono
-        self.level=level; self.target=target; self.message=message
-
-def _make(raw, service, ts1, ts_ep, level, target, message) -> ParsedLine:
-    return ParsedLine(raw=raw, service=service,
-                      timestamp=_fmt_ts(ts1), ts_epoch=ts_ep,
-                      level=_norm(level), target=target, message=message)
-
-def parse_line(raw: str, default_service: str = '') -> ParsedLine:
-    raw   = raw.rstrip('\n')
-    clean = strip_ansi(raw)
-
-    # ── Step 1: strip outer prefix to get (service, ts1, remainder) ──────────
-    service = default_service
-    ts1     = ''
-    ts_ep   = time.time()
-    rest    = clean
-
-    m = _COMPOSE_PRE.match(clean)
-    if m:
-        service = m.group('service')
-        ts1     = m.group('ts1')
-        ts_ep   = _ts_epoch(ts1)
-        rest    = m.group('rest')
-    else:
-        m = _DOCKER_PRE.match(clean)
-        if m:
-            ts1   = m.group('ts1')
-            ts_ep = _ts_epoch(ts1)
-            rest  = m.group('rest')
-
-    # ── Step 2: try format patterns on remainder ──────────────────────────────
-
-    # A: Rust tracing (second ISO timestamp + target::path: message)
-    m = _P_RUST.match(rest)
-    if m:
-        return _make(raw, service, m.group('ts2'), _ts_epoch(m.group('ts2')),
-                     m.group('level'), m.group('target'), m.group('message'))
-
-    # B: NestJS
-    m = _P_NEST.match(rest)
-    if m:
-        return _make(raw, service, ts1, ts_ep,
-                     m.group('level'), m.group('target'), m.group('message'))
-
-    # C: bracket level [LEVEL] message
-    m = _P_BRACKET.match(rest)
-    if m:
-        return _make(raw, service, ts1, ts_ep,
-                     m.group('level'), '', m.group('message'))
-
-    # C2: [date] [LEVEL] message  (hotio / linuxserver.io containers)
-    m = _P_BRACKET_TS.match(rest)
-    if m:
-        return _make(raw, service, ts1, ts_ep,
-                     m.group('level'), '', m.group('message'))
-
-    # D: Python logging (date+time stamp embedded in remainder)
-    m = _P_PYTHON.match(rest)
-    if m:
-        return _make(raw, service, ts1, ts_ep,
-                     m.group('level'), '', m.group('message'))
-
-    # E: level keyword at start of remainder (e.g. short codes: INF, WRN, ERR)
-    m = _P_LEVEL_FIRST.match(rest)
-    if m:
-        return _make(raw, service, ts1, ts_ep,
-                     m.group('level'), '', m.group('message'))
-
-    # F: logfmt (Go apps: level=warning msg="...")
-    m = _P_LOGFMT.search(rest)
-    if m:
-        msg = m.group('message').strip('"')
-        return _make(raw, service, ts1, ts_ep,
-                     m.group('level'), '', msg)
-
-    # G: bare scan — level anywhere (case-insensitive); use remainder as message
-    m = _BARE_LEVEL.search(rest)
-    return _make(raw, service, ts1, ts_ep,
-                 m.group('level') if m else 'INFO', '', rest)
+    return _CONTAINER_COLORS[assign_container_index(name) % len(_CONTAINER_COLORS)]
 
 # ── Shared state ──────────────────────────────────────────────────────────────
 

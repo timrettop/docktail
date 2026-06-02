@@ -5,7 +5,7 @@ Each class targets a specific log format.  Container names and log content
 are generic — the tests verify format detection, not any particular app.
 """
 import pytest
-from docktail import ParsedLine, _norm, parse_line
+from core import ParsedLine, _norm, parse_line
 
 
 # ── _norm: level normalisation ────────────────────────────────────────────────
