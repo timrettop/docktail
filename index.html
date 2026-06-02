@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>docktail</title>
+  <style>
+    /* ── Reset + variables ──────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:         #0d1117;
+      --bg2:        #161b22;
+      --bg3:        #21262d;
+      --border:     #30363d;
+      --text:       #e6edf3;
+      --text-dim:   #8b949e;
+      --text-faint: #484f58;
+      --accent:     #388bfd;
+      --radius:     6px;
+      --topbar-h:   42px;
+      --font-mono:  'JetBrains Mono', 'Cascadia Code', 'SF Mono', 'Fira Code',
+                    ui-monospace, monospace;
+      --font-ui:    -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+
+    html, body { height: 100%; background: var(--bg); color: var(--text); }
+
+    /* ── App shell — top bar + main area ─────────────────────────────────────── */
+    #app   { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+    #main  { position: relative; flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+
+    /* ── Top bar ────────────────────────────────────────────────────────────── */
+    #top-bar {
+      display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+      padding: 0 12px; height: var(--topbar-h);
+      background: var(--bg2); border-bottom: 1px solid var(--border);
+      font: 12px var(--font-mono); z-index: 100;
+    }
+
+    .brand { font: 700 13px var(--font-mono); color: var(--text); margin-right: 4px; }
+    .brand span { color: var(--accent); }
+
+    .level-pill {
+      display: flex; align-items: center; gap: 3px;
+      padding: 3px 7px; border-radius: 99px; border: 1px solid transparent;
+      cursor: pointer; user-select: none; transition: opacity .1s;
+      background: none; font: 12px var(--font-mono); color: inherit;
+    }
+    .level-pill:hover { opacity: .8; }
+
+    .pill-E        { color: #f85149; border-color: #6e231f; }
+    .pill-E.active { background: #2d1117; }
+    .pill-W        { color: #d29922; border-color: #5c4000; }
+    .pill-W.active { background: #2d1f00; }
+    .pill-I        { color: #388bfd; border-color: #1b3a6e; }
+    .pill-I.active { background: #0d1f3c; }
+    .pill-D        { color: #6e7681; border-color: #30363d; }
+    .pill-D.active { background: #161b22; }
+    .pill-inactive { opacity: .4; }
+
+    .bar-sep  { width: 1px; height: 18px; background: var(--border); margin: 0 2px; flex-shrink: 0; }
+    .bar-stat { color: var(--text-dim); white-space: nowrap; font: 12px var(--font-mono); }
+    .bar-stat b { color: var(--text); font-weight: 400; }
+    .bar-space { flex: 1; }
+
+    /* WS status chip */
+    #ws-chip {
+      display: flex; align-items: center; gap: 5px;
+      font: 11px var(--font-ui); color: var(--text-dim);
+      padding: 3px 8px; border-radius: 99px; border: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    #ws-chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); }
+    #ws-chip.connected    .dot { background: #3fb950; }
+    #ws-chip.connecting   .dot { background: #d29922; animation: blink 1s infinite; }
+    #ws-chip.reconnecting .dot { background: #d29922; animation: blink 1s infinite; }
+    #ws-chip.disconnected .dot { background: var(--text-faint); }
+    #ws-chip.error        .dot { background: #f85149; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.25} }
+
+    /* Icon buttons */
+    .icon-btn {
+      background: none; border: 1px solid var(--border); border-radius: 4px;
+      color: var(--text-dim); font: 11px var(--font-ui); padding: 3px 8px;
+      cursor: pointer; flex-shrink: 0; white-space: nowrap;
+    }
+    .icon-btn:hover { color: var(--text); border-color: var(--text-dim); }
+    .icon-btn.active { color: var(--text); border-color: var(--text-dim); background: var(--bg3); }
+
+    /* ── Container panel (dropdown overlay) ─────────────────────────────────── */
+    #container-panel {
+      position: absolute; top: 0; left: 50%; transform: translateX(-50%) translateY(-100%);
+      width: min(520px, 96vw);
+      background: var(--bg2); border: 1px solid var(--border);
+      border-top: none; border-radius: 0 0 10px 10px;
+      box-shadow: 0 12px 40px #00000070;
+      z-index: 90; transition: transform .2s ease;
+      display: flex; flex-direction: column; max-height: 70vh;
+    }
+    #container-panel.open { transform: translateX(-50%) translateY(0); }
+
+    .panel-header {
+      display: flex; align-items: center; padding: 10px 14px 8px;
+      border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
+    .panel-header span {
+      font: 600 11px var(--font-ui); color: var(--text-dim);
+      text-transform: uppercase; letter-spacing: .06em; flex: 1;
+    }
+    .panel-header-actions { display: flex; gap: 6px; }
+    .panel-header-actions button {
+      font: 11px var(--font-ui); color: var(--text-dim);
+      background: none; border: 1px solid var(--border); border-radius: 4px;
+      padding: 2px 7px; cursor: pointer;
+    }
+    .panel-header-actions button:hover { color: var(--text); }
+
+    #container-list {
+      overflow-y: auto; flex: 1;
+    }
+
+    .container-row {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 14px; cursor: pointer; border-bottom: 1px solid var(--border);
+      transition: background .1s;
+    }
+    .container-row:last-child { border-bottom: none; }
+    .container-row:hover { background: var(--bg3); }
+    .container-row input[type=checkbox] { width: 14px; height: 14px; cursor: pointer; flex-shrink: 0; }
+    .color-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+    .container-name { font: 600 12px var(--font-mono); flex: 1; }
+    .container-status { font: 11px var(--font-ui); color: var(--text-dim); }
+
+    .panel-empty { padding: 20px; text-align: center; font: 13px var(--font-ui); color: var(--text-dim); }
+
+    .panel-footer {
+      padding: 10px 14px; border-top: 1px solid var(--border);
+      display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+    }
+    .panel-footer label {
+      font: 12px var(--font-ui); color: var(--text-dim);
+      display: flex; align-items: center; gap: 5px;
+    }
+    .panel-footer input[type=number] {
+      width: 56px; background: var(--bg); border: 1px solid var(--border);
+      color: var(--text); border-radius: 4px; padding: 3px 6px;
+      font: 12px var(--font-mono);
+    }
+    .panel-footer input[type=text] {
+      width: 120px; background: var(--bg); border: 1px solid var(--border);
+      color: var(--text); border-radius: 4px; padding: 3px 6px;
+      font: 12px var(--font-mono);
+    }
+    ::placeholder { color: var(--text-faint); }
+
+    #watch-btn {
+      margin-left: auto; padding: 5px 16px; font: 600 12px var(--font-ui);
+      background: var(--accent); color: #fff; border: none; border-radius: 5px;
+      cursor: pointer; flex-shrink: 0;
+    }
+    #watch-btn:disabled { opacity: .4; cursor: not-allowed; }
+    #watch-btn:not(:disabled):hover { opacity: .85; }
+
+    /* ── Pause banner ───────────────────────────────────────────────────────── */
+    #pause-banner {
+      display: none; align-items: center; gap: 10px;
+      padding: 5px 14px; flex-shrink: 0;
+      background: #2d1f00; border-bottom: 1px solid #5c4000;
+      font: 12px var(--font-ui); color: #d29922;
+    }
+    #pause-banner.visible { display: flex; }
+    #pause-banner b { font-weight: 600; }
+    #pause-banner button {
+      margin-left: auto; padding: 3px 10px; font: 600 11px var(--font-ui);
+      background: #d29922; color: #000; border: none; border-radius: 4px; cursor: pointer;
+    }
+
+    /* ── Log area ───────────────────────────────────────────────────────────── */
+    #log-area {
+      flex: 1; overflow-y: scroll; padding: 2px 0;
+      font: 12px/1.65 var(--font-mono);
+    }
+
+    /* Level visibility via CSS class toggles on #log-area */
+    #log-area.hide-ERROR .log-line.level-ERROR { display: none; }
+    #log-area.hide-WARN  .log-line.level-WARN  { display: none; }
+    #log-area.hide-INFO  .log-line.level-INFO  { display: none; }
+    #log-area.hide-DEBUG .log-line.level-DEBUG { display: none; }
+
+    /* Empty / disconnected state */
+    #log-empty {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      height: 100%; color: var(--text-faint); font: 13px var(--font-ui); gap: 8px;
+    }
+    #log-empty .hint { font-size: 11px; }
+
+    /* ── Log lines ──────────────────────────────────────────────────────────── */
+    .log-line {
+      display: grid;
+      grid-template-columns: 14ch 13ch 38px 22ch 1fr;
+      gap: 0 8px; padding: 1px 12px; align-items: baseline;
+      cursor: pointer; border-left: 2px solid transparent;
+    }
+    .log-line:hover                { background: #ffffff08; }
+    .log-line.highlighted          { background: #d2992222; border-left-color: #d29922; }
+    .log-line.level-ERROR          { background: #f8514908; }
+    .log-line.level-ERROR:hover    { background: #f8514914; }
+
+    .log-line .svc  { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .log-line .ts   { color: var(--text-dim); font-size: 11px; white-space: nowrap; }
+    .log-line .tgt  { color: var(--text-dim); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .log-line .msg  { word-break: break-all; }
+    .log-line .kv   { color: var(--text-faint); }
+
+    .date-sep {
+      display: flex; align-items: center; gap: 8px; padding: 6px 12px;
+      color: var(--text-faint); font: 11px var(--font-ui); letter-spacing: .04em;
+    }
+    .date-sep::before, .date-sep::after {
+      content: ''; flex: 1; height: 1px; background: var(--border);
+    }
+
+    /* ── Badges ─────────────────────────────────────────────────────────────── */
+    .badge {
+      display: inline-block; font: 700 10px var(--font-mono);
+      padding: 1px 4px; border-radius: 3px; white-space: nowrap;
+    }
+    .badge-ERROR { background: #da3633; color: #fff; }
+    .badge-WARN  { background: #9e6a03; color: #fff; }
+    .badge-INFO  { background: #1158c7; color: #fff; }
+    .badge-DEBUG { background: #2d333b; color: var(--text-dim); }
+
+    /* ── Live button ────────────────────────────────────────────────────────── */
+    #live-btn {
+      display: none; position: absolute; bottom: 14px; right: 18px;
+      padding: 5px 14px; font: 600 11px var(--font-ui);
+      background: var(--accent); color: #fff;
+      border: none; border-radius: 99px; cursor: pointer;
+      box-shadow: 0 2px 10px #00000060;
+    }
+    #live-btn:hover { opacity: .85; }
+
+    /* ── Scrollbar ───────────────────────────────────────────────────────────── */
+    #log-area::-webkit-scrollbar       { width: 5px; }
+    #log-area::-webkit-scrollbar-track { background: transparent; }
+    #log-area::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  </style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ── Top bar (always visible) ─────────────────────────────────────────── -->
+  <div id="top-bar">
+    <span class="brand"><span>dock</span>tail</span>
+
+    <button class="level-pill pill-E active" id="pill-ERROR" onclick="toggleLevel('ERROR')">
+      ● E:<span id="cnt-ERROR">0</span>
+    </button>
+    <button class="level-pill pill-W active" id="pill-WARN" onclick="toggleLevel('WARN')">
+      ● W:<span id="cnt-WARN">0</span>
+    </button>
+    <button class="level-pill pill-I active" id="pill-INFO" onclick="toggleLevel('INFO')">
+      ● I:<span id="cnt-INFO">0</span>
+    </button>
+    <button class="level-pill pill-D" id="pill-DEBUG" onclick="toggleLevel('DEBUG')">
+      ○ D:<span id="cnt-DEBUG">0</span>
+    </button>
+
+    <div class="bar-sep"></div>
+    <span class="bar-stat">hidden <b id="hidden-count">0</b></span>
+    <div class="bar-sep"></div>
+    <span class="bar-stat" id="rate-stat">0.0 lines/s</span>
+
+    <div class="bar-space"></div>
+
+    <div id="ws-chip" class="disconnected"><div class="dot"></div><span id="ws-label">disconnected</span></div>
+    <button class="icon-btn" id="containers-btn" onclick="togglePanel()">⊞ Containers</button>
+    <button class="icon-btn" id="pause-btn" onclick="togglePause()">⏸ Pause</button>
+    <button class="icon-btn" onclick="clearCounts()" title="Clear counters">↺</button>
+  </div>
+
+  <!-- ── Main area (container panel + log area) ────────────────────────────── -->
+  <div id="main">
+
+    <!-- Container picker dropdown panel -->
+    <div id="container-panel">
+      <div class="panel-header">
+        <span>Containers</span>
+        <div class="panel-header-actions">
+          <button onclick="selectAll()">All</button>
+          <button onclick="selectNone()">None</button>
+          <button onclick="loadContainers()">↻ Refresh</button>
+        </div>
+      </div>
+
+      <div id="container-list">
+        <div class="panel-empty">Loading…</div>
+      </div>
+
+      <div class="panel-footer">
+        <label>History <input type="number" id="tail-input" value="50" min="1" max="5000"> lines</label>
+        <label>Project <input type="text" id="project-input" placeholder="all"></label>
+        <button id="watch-btn" disabled onclick="startWatching()">Watch Logs</button>
+      </div>
+    </div>
+
+    <!-- Pause banner -->
+    <div id="pause-banner">
+      ⏸ Paused — <b><span id="queued-count">0</span> lines queued</b>
+      <button onclick="resume()">Resume ▶</button>
+    </div>
+
+    <!-- Log output -->
+    <div id="log-area">
+      <div id="log-empty">
+        <span>No logs yet</span>
+        <span class="hint">Open Containers ↑ to select and start watching</span>
+      </div>
+    </div>
+
+    <!-- Jump to live -->
+    <button id="live-btn" onclick="jumpToLive()">↓ Live</button>
+
+  </div>
+</div>
+<script>
+'use strict';
+
+// ── Constants ──────────────────────────────────────────────────────────────────
+const MAX_LINES     = 5000;
+const TRIM_TO       = 4500;
+const SCROLL_THRESH = 60;
+
+const BADGE = {
+  ERROR: '<span class="badge badge-ERROR">ERR</span>',
+  WARN:  '<span class="badge badge-WARN">WRN</span>',
+  INFO:  '<span class="badge badge-INFO">INF</span>',
+  DEBUG: '<span class="badge badge-DEBUG">DBG</span>',
+};
+
+// ── State ──────────────────────────────────────────────────────────────────────
+const state = {
+  ws:          null,
+  visible:     new Set(['ERROR', 'WARN', 'INFO']),
+  counts:      { ERROR: 0, WARN: 0, INFO: 0, DEBUG: 0 },
+  paused:      false,
+  pauseBuf:    [],
+  isLive:      true,
+  rateTs:      [],
+  lineCount:   0,
+  containers:  [],
+  tail:        50,
+  reconnDelay: 1000,
+  reconnTimer: null,
+  panelOpen:   false,
+};
+
+// ── DOM refs ──────────────────────────────────────────────────────────────────
+const logArea       = document.getElementById('log-area');
+const logEmpty      = document.getElementById('log-empty');
+const pauseBanner   = document.getElementById('pause-banner');
+const liveBtn       = document.getElementById('live-btn');
+const pauseBtn      = document.getElementById('pause-btn');
+const wsChip        = document.getElementById('ws-chip');
+const wsLabel       = document.getElementById('ws-label');
+const containerPanel= document.getElementById('container-panel');
+const containersBtn = document.getElementById('containers-btn');
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+                  .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function fmtMsg(text) {
+  const KV = /\b(\w+?)(?:2m)?=("(?:[^"\\]|\\.)*"|\S+)/g;
+  const out = []; let last = 0, m;
+  while ((m = KV.exec(text)) !== null) {
+    if (m.index > last) out.push(esc(text.slice(last, m.index)));
+    out.push(`<span class="kv">${esc(m[0])}</span>`);
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) out.push(esc(text.slice(last)));
+  return out.join('');
+}
+
+function shortTarget(t) {
+  if (!t) return '';
+  const p = t.split('::');
+  return p.length > 2 ? p.slice(-2).join('::') : t;
+}
+
+function isAtBottom() {
+  return logArea.scrollHeight - logArea.scrollTop - logArea.clientHeight < SCROLL_THRESH;
+}
+
+function scrollIfLive() {
+  if (state.isLive) logArea.scrollTop = logArea.scrollHeight;
+}
+
+// ── Panel toggle ──────────────────────────────────────────────────────────────
+function openPanel() {
+  state.panelOpen = true;
+  containerPanel.classList.add('open');
+  containersBtn.classList.add('active');
+}
+
+function closePanel() {
+  state.panelOpen = false;
+  containerPanel.classList.remove('open');
+  containersBtn.classList.remove('active');
+}
+
+function togglePanel() {
+  state.panelOpen ? closePanel() : openPanel();
+}
+
+// Close panel when clicking outside it
+document.addEventListener('click', e => {
+  if (state.panelOpen &&
+      !containerPanel.contains(e.target) &&
+      !containersBtn.contains(e.target)) {
+    closePanel();
+  }
+});
+
+// ── Container picker ──────────────────────────────────────────────────────────
+async function loadContainers() {
+  const project = document.getElementById('project-input').value.trim();
+  const url = project
+    ? `/api/containers?project=${encodeURIComponent(project)}`
+    : '/api/containers';
+  const listEl = document.getElementById('container-list');
+
+  listEl.innerHTML = '<div class="panel-empty">Loading…</div>';
+  document.getElementById('watch-btn').disabled = true;
+
+  try {
+    const data = await fetch(url).then(r => r.json());
+    renderContainerList(data.containers || []);
+  } catch {
+    listEl.innerHTML = '<div class="panel-empty">Could not reach server</div>';
+  }
+}
+
+function renderContainerList(containers) {
+  const listEl = document.getElementById('container-list');
+  if (!containers.length) {
+    listEl.innerHTML = '<div class="panel-empty">No running containers found</div>';
+    document.getElementById('watch-btn').disabled = true;
+    return;
+  }
+  listEl.innerHTML = containers.map(c => `
+    <label class="container-row">
+      <input type="checkbox" name="container" value="${esc(c.name)}" checked
+             onchange="updateWatchBtn()">
+      <span class="color-dot" style="background:${esc(c.color)}"></span>
+      <span class="container-name" style="color:${esc(c.color)}">${esc(c.name)}</span>
+      <span class="container-status">${esc(c.status)}</span>
+    </label>
+  `).join('');
+  updateWatchBtn();
+}
+
+function updateWatchBtn() {
+  const n = document.querySelectorAll('input[name=container]:checked').length;
+  document.getElementById('watch-btn').disabled = n === 0;
+}
+
+function selectAll()  { document.querySelectorAll('input[name=container]').forEach(c => c.checked = true);  updateWatchBtn(); }
+function selectNone() { document.querySelectorAll('input[name=container]').forEach(c => c.checked = false); updateWatchBtn(); }
+
+// ── Connection ────────────────────────────────────────────────────────────────
+function startWatching() {
+  const checked    = [...document.querySelectorAll('input[name=container]:checked')];
+  state.containers = checked.map(c => c.value);
+  state.tail       = parseInt(document.getElementById('tail-input').value) || 50;
+
+  closePanel();
+  clearLog();
+  connect();
+}
+
+function connect() {
+  if (state.ws) { state.ws.onclose = null; state.ws.close(); }
+
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const names = state.containers.map(encodeURIComponent).join(',');
+  const url   = `${proto}//${location.host}/ws/logs?containers=${names}&tail=${state.tail}`;
+
+  setWsStatus('connecting');
+  state.ws = new WebSocket(url);
+
+  state.ws.onopen    = () => { state.reconnDelay = 1000; };
+  state.ws.onmessage = e  => handleMessage(JSON.parse(e.data));
+  state.ws.onclose   = () => {
+    setWsStatus('reconnecting');
+    clearTimeout(state.reconnTimer);
+    if (state.containers.length) {
+      state.reconnTimer = setTimeout(connect, state.reconnDelay);
+      state.reconnDelay = Math.min(state.reconnDelay * 2, 30000);
+    }
+  };
+  state.ws.onerror = () => setWsStatus('error');
+}
+
+// ── Message handlers ──────────────────────────────────────────────────────────
+function handleMessage(msg) {
+  switch (msg.type) {
+    case 'connected': setWsStatus('connected'); break;
+    case 'line':      handleLine(msg);          break;
+    case 'date_sep':  handleDateSep(msg);       break;
+    case 'status':    handleStatus(msg);        break;
+    case 'error':     handleErr(msg);           break;
+  }
+}
+
+function handleLine(msg) {
+  state.rateTs.push(Date.now());
+  if (state.paused) {
+    state.pauseBuf.push(msg);
+    document.getElementById('queued-count').textContent = state.pauseBuf.length;
+    return;
+  }
+  appendLine(msg);
+}
+
+function handleDateSep(msg) {
+  if (state.paused) { state.pauseBuf.push(msg); return; }
+  appendSep(msg.label);
+}
+
+function handleStatus(msg) {
+  if (msg.counts) { state.counts = { ...state.counts, ...msg.counts }; updateCounters(); }
+}
+
+function handleErr(msg) {
+  setWsStatus('error');
+  const el = document.createElement('div');
+  el.className = 'date-sep'; el.style.color = '#f85149';
+  el.textContent = '⚠ ' + msg.message;
+  logArea.appendChild(el); scrollIfLive();
+}
+
+// ── Rendering ─────────────────────────────────────────────────────────────────
+function appendLine(msg) {
+  hideEmpty();
+  const level = msg.level || 'INFO';
+  const el = document.createElement('div');
+  el.className = `log-line level-${level}`;
+  el.innerHTML =
+    `<span class="svc" style="color:${esc(msg.color||'#888')}">${esc(msg.service||'')}</span>` +
+    `<span class="ts">${esc(msg.timestamp||'')}</span>` +
+    (BADGE[level] || BADGE.INFO) +
+    `<span class="tgt">${esc(shortTarget(msg.target||''))}</span>` +
+    `<span class="msg">${fmtMsg(msg.message||'')}</span>`;
+  el.addEventListener('click', () => pauseOnLine(el));
+  logArea.appendChild(el);
+  state.lineCount++;
+  trimIfNeeded();
+  scrollIfLive();
+}
+
+function appendSep(label) {
+  hideEmpty();
+  const el = document.createElement('div');
+  el.className = 'date-sep'; el.textContent = label;
+  logArea.appendChild(el); scrollIfLive();
+}
+
+function hideEmpty() {
+  if (logEmpty) logEmpty.style.display = 'none';
+}
+
+function trimIfNeeded() {
+  if (state.lineCount < MAX_LINES) return;
+  const lines    = logArea.querySelectorAll('.log-line');
+  const toRemove = lines.length - TRIM_TO;
+  for (let i = 0; i < toRemove; i++) lines[i].remove();
+  state.lineCount = TRIM_TO;
+}
+
+function clearLog() {
+  logArea.innerHTML = '';
+  if (logEmpty) { logEmpty.style.display = ''; logArea.appendChild(logEmpty); }
+  state.lineCount  = 0;
+  state.counts     = { ERROR: 0, WARN: 0, INFO: 0, DEBUG: 0 };
+  state.paused     = false;
+  state.pauseBuf   = [];
+  state.isLive     = true;
+  liveBtn.style.display = 'none';
+  pauseBanner.classList.remove('visible');
+  pauseBtn.textContent = '⏸ Pause';
+  updateCounters();
+}
+
+// ── Pause / resume ────────────────────────────────────────────────────────────
+function pauseOnLine(el) {
+  state.paused = true;
+  document.querySelectorAll('.log-line.highlighted').forEach(e => e.classList.remove('highlighted'));
+  el.classList.add('highlighted');
+  el.scrollIntoView({ block: 'nearest' });
+  pauseBanner.classList.add('visible');
+  pauseBtn.textContent = '▶ Resume';
+}
+
+function togglePause() { state.paused ? resume() : pause(); }
+
+function pause() {
+  state.paused = true;
+  pauseBanner.classList.add('visible');
+  pauseBtn.textContent = '▶ Resume';
+}
+
+function resume() {
+  state.paused = false;
+  pauseBanner.classList.remove('visible');
+  pauseBtn.textContent = '⏸ Pause';
+  document.querySelectorAll('.log-line.highlighted').forEach(e => e.classList.remove('highlighted'));
+  state.pauseBuf.forEach(m => m.type === 'date_sep' ? appendSep(m.label) : appendLine(m));
+  state.pauseBuf = [];
+  document.getElementById('queued-count').textContent = '0';
+  jumpToLive();
+}
+
+// ── Level toggles ─────────────────────────────────────────────────────────────
+function toggleLevel(level) {
+  const pill = document.getElementById(`pill-${level}`);
+  const letter = level[0];
+  if (state.visible.has(level)) {
+    state.visible.delete(level);
+    logArea.classList.add(`hide-${level}`);
+    pill.classList.remove('active');
+    pill.classList.add('pill-inactive');
+    pill.innerHTML = `○ ${letter}:<span id="cnt-${level}">${state.counts[level]}</span>`;
+  } else {
+    state.visible.add(level);
+    logArea.classList.remove(`hide-${level}`);
+    pill.classList.add('active');
+    pill.classList.remove('pill-inactive');
+    pill.innerHTML = `● ${letter}:<span id="cnt-${level}">${state.counts[level]}</span>`;
+  }
+  updateHiddenCount();
+}
+
+// ── Counters ──────────────────────────────────────────────────────────────────
+function updateCounters() {
+  for (const [lvl, n] of Object.entries(state.counts)) {
+    const el = document.getElementById(`cnt-${lvl}`);
+    if (el) el.textContent = n;
+  }
+  updateHiddenCount();
+}
+
+function updateHiddenCount() {
+  let h = 0;
+  for (const [lvl, n] of Object.entries(state.counts)) {
+    if (!state.visible.has(lvl)) h += n;
+  }
+  document.getElementById('hidden-count').textContent = h;
+}
+
+function clearCounts() {
+  state.counts = { ERROR: 0, WARN: 0, INFO: 0, DEBUG: 0 };
+  updateCounters();
+}
+
+// ── Live button ───────────────────────────────────────────────────────────────
+function jumpToLive() {
+  state.isLive = true;
+  logArea.scrollTop = logArea.scrollHeight;
+  liveBtn.style.display = 'none';
+}
+
+logArea.addEventListener('scroll', () => {
+  state.isLive = isAtBottom();
+  liveBtn.style.display = state.isLive ? 'none' : 'block';
+});
+
+// ── WS status chip ────────────────────────────────────────────────────────────
+function setWsStatus(s) {
+  wsChip.className = s;
+  wsLabel.textContent = s;
+}
+
+// ── Rate ticker ───────────────────────────────────────────────────────────────
+setInterval(() => {
+  const now = Date.now(), cutoff = now - 1000;
+  state.rateTs = state.rateTs.filter(t => t >= cutoff);
+  document.getElementById('rate-stat').textContent = `${state.rateTs.length.toFixed ? state.rateTs.length : 0} lines/s`;
+}, 500);
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+loadContainers();
+openPanel();
+</script>
+</body>
+</html>
